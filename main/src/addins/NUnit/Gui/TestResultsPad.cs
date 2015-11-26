@@ -251,6 +251,8 @@ namespace MonoDevelop.NUnit
 			
 			progressBar.HeightRequest = infoLabel.SizeRequest ().Height;
 			runPanel.ShowAll ();
+			progressBar.Hide ();
+			infoSep.Hide ();
 			resultSummary = new UnitTestResult ();
 			UpdateCounters ();
 		}
@@ -290,7 +292,9 @@ namespace MonoDevelop.NUnit
 			progressBar.Text = "";
 			testsRun = 0;
 			resultSummary = new UnitTestResult ();
-			resultLabel.Markup = GetResultsMarkup ();
+			resultLabel.Markup = "";
+			resultLabel.Hide ();
+			labels.Show ();
 			UpdateCounters ();
 		}
 		
@@ -601,9 +605,19 @@ namespace MonoDevelop.NUnit
 			if (loc != null)
 				IdeApp.Workbench.OpenDocument (loc.FileName, loc.Line, loc.Column);
 		}
+
+		[CommandHandler (TestCommands.RerunTest)]
+		protected void OnRerunTest ()
+		{
+			UnitTest test = GetSelectedTest ();
+			if (test == null)
+				return;
+			NUnitService.Instance.RunTest (test, null);
+		}
 		
 		[CommandUpdateHandler (TestCommands.ShowTestCode)]
 		[CommandUpdateHandler (TestCommands.GoToFailure)]
+		[CommandUpdateHandler (TestCommands.RerunTest)]
 		protected void OnUpdateRunTest (CommandInfo info)
 		{
 			UnitTest test = GetSelectedTest ();

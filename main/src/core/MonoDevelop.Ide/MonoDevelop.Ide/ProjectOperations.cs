@@ -56,6 +56,8 @@ using MonoDevelop.Projects.Formats.MSBuild;
 using System.Collections.Immutable;
 using MonoDevelop.Ide.Editor;
 using MonoDevelop.Core.Text;
+using ICSharpCode.NRefactory.TypeSystem;
+using MonoDevelop.Components.Extensions;
 
 namespace MonoDevelop.Ide
 {
@@ -354,14 +356,14 @@ namespace MonoDevelop.Ide
 			Export (item, null);
 		}
 		
-		public void Export (IMSBuildFileObject item, MSBuildFileFormat format)
+		public async void Export (IMSBuildFileObject item, MSBuildFileFormat format)
 		{
 			ExportSolutionDialog dlg = new ExportSolutionDialog (item, format);
 			
 			try {
 				if (MessageService.RunCustomDialog (dlg) == (int) Gtk.ResponseType.Ok) {
 					using (ProgressMonitor monitor = IdeApp.Workbench.ProgressMonitors.GetToolOutputProgressMonitor (true)) {
-						Services.ProjectService.Export (monitor, item.FileName, dlg.TargetFolder, dlg.Format);
+						await Services.ProjectService.Export (monitor, item.FileName, dlg.TargetFolder, dlg.Format);
 					}
 				}
 			} finally {
@@ -604,7 +606,7 @@ namespace MonoDevelop.Ide
 			ShowOptions (entry, null);
 		}
 		
-		public void ShowOptions (WorkspaceObject entry, string panelId)
+		public async void ShowOptions (WorkspaceObject entry, string panelId)
 		{
 			if (entry is SolutionItem) {
 				var selectedProject = (SolutionItem) entry;
@@ -620,11 +622,11 @@ namespace MonoDevelop.Ide
 					if (MessageService.RunCustomDialog (optionsDialog) == (int)Gtk.ResponseType.Ok) {
 						foreach (object ob in optionsDialog.ModifiedObjects) {
 							if (ob is Solution) {
-								SaveAsync ((Solution)ob);
+								await SaveAsync ((Solution)ob);
 								return;
 							}
 						}
-						SaveAsync (selectedProject);
+						await SaveAsync (selectedProject);
 						IdeApp.Workspace.SavePreferences ();
 						IdeApp.Workbench.ReparseOpenDocuments ();
 					}
@@ -641,8 +643,8 @@ namespace MonoDevelop.Ide
 					if (panelId != null)
 						optionsDialog.SelectPanel (panelId);
 					if (MessageService.RunCustomDialog (optionsDialog) == (int) Gtk.ResponseType.Ok) {
-						SaveAsync (solution);
-						IdeApp.Workspace.SavePreferences (solution);
+						await SaveAsync (solution);
+						await IdeApp.Workspace.SavePreferences (solution);
 					}
 				} finally {
 					optionsDialog.Destroy ();
@@ -656,11 +658,11 @@ namespace MonoDevelop.Ide
 						optionsDialog.SelectPanel (panelId);
 					if (MessageService.RunCustomDialog (optionsDialog) == (int) Gtk.ResponseType.Ok) {
 						if (entry is IWorkspaceFileObject)
-							SaveAsync ((IWorkspaceFileObject) entry);
+							await SaveAsync ((IWorkspaceFileObject) entry);
 						else {
 							SolutionFolderItem si = entry as SolutionFolderItem;
 							if (si.ParentSolution != null)
-								SaveAsync (si.ParentSolution);
+								await SaveAsync (si.ParentSolution);
 						}
 						IdeApp.Workspace.SavePreferences ();
 					}
@@ -678,6 +680,9 @@ namespace MonoDevelop.Ide
 		
 		public void NewSolution (string defaultTemplate)
 		{
+			if (!IdeApp.Workbench.SaveAllDirtyFiles ())
+				return;
+
 			var newProjectDialog = new NewProjectDialogController ();
 			newProjectDialog.OpenSolution = true;
 			newProjectDialog.SelectedTemplateId = defaultTemplate;
@@ -709,7 +714,7 @@ namespace MonoDevelop.Ide
 			WorkspaceItem res = null;
 			
 			var dlg = new SelectFileDialog () {
-				Action = Gtk.FileChooserAction.Open,
+				Action = FileChooserAction.Open,
 				CurrentFolder = parentWorkspace.BaseDirectory,
 				SelectMultiple = false,
 			};
@@ -771,7 +776,7 @@ namespace MonoDevelop.Ide
 			SolutionFolderItem res = null;
 			
 			var dlg = new SelectFileDialog () {
-				Action = Gtk.FileChooserAction.Open,
+				Action = FileChooserAction.Open,
 				CurrentFolder = parentFolder.BaseDirectory,
 				SelectMultiple = false,
 			};
@@ -1342,7 +1347,7 @@ namespace MonoDevelop.Ide
 				}
 
 				//wait for any custom tools that were triggered by the save, since the build may depend on them
-				MonoDevelop.Ide.CustomTools.CustomToolService.WaitForRunningTools (monitor);
+				await MonoDevelop.Ide.CustomTools.CustomToolService.WaitForRunningTools (monitor);
 
 				if (skipPrebuildCheck || result.ErrorCount == 0) {
 					tt.Trace ("Building item");
@@ -1518,7 +1523,7 @@ namespace MonoDevelop.Ide
 		{
 			var dlg = new SelectFileDialog () {
 				SelectMultiple = true,
-				Action = Gtk.FileChooserAction.Open,
+				Action = FileChooserAction.Open,
 				CurrentFolder = folder.BaseDirectory,
 				TransientFor = MessageService.RootWindow,
 			};

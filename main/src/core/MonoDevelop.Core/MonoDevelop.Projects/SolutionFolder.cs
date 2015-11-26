@@ -564,6 +564,11 @@ namespace MonoDevelop.Projects
 			return null;
 		}
 
+		bool IBuildTarget.CanBuild (ConfigurationSelector configuration)
+		{
+			return true;
+		}
+
 		public async Task<BuildResult> Clean (ProgressMonitor monitor, ConfigurationSelector configuration, OperationContext operationContext = null)
 		{
 			if (ParentSolution == null)
@@ -571,8 +576,6 @@ namespace MonoDevelop.Projects
 			SolutionConfiguration conf = ParentSolution.GetConfiguration (configuration);
 			if (conf == null)
 				return new BuildResult ();
-
-			var res = new BuildResult { BuildCount = 0 };
 
 			ReadOnlyCollection<SolutionItem> allProjects;
 			try {
@@ -591,7 +594,6 @@ namespace MonoDevelop.Projects
 			finally {
 				monitor.EndTask ();
 			}
-			return res;
 		}
 
 		class BuildStatus

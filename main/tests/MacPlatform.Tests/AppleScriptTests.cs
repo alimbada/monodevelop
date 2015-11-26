@@ -1,9 +1,10 @@
-﻿// IPadContent.cs
+﻿//
+// AppleScriptTests.cs
 //
 // Author:
-//   Viktoria Dudka (viktoriad@remobjects.com)
+//       iain holmes <iain@xamarin.com>
 //
-// Copyright (c) 2009 RemObjects Software
+// Copyright (c) 2015 Xamarin, Inc
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,19 +23,22 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
-//
-//
-
 using System;
-using Gtk;
+using MonoDevelop.MacInterop;
+using NUnit.Framework;
 
-namespace MonoDevelop.Ide.Gui
+namespace MacPlatform.Tests
 {
-    public interface IPadContent : IDisposable
+	public class AppleScriptTests
 	{
-        Widget Control { get; }
-
-        void Initialize (IPadWindow window);
-        void RedrawContent ();
+		[Test]
+		public void TestAppleScript ()
+		{
+			// Include the quotes in the test string because AppleScript is a bit janky
+			string testStr = "\"hello world\"";
+			string result = AppleScript.Run ("return {0}", testStr);
+			Assert.AreEqual (result, testStr);
+		}
 	}
 }
+

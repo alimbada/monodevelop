@@ -47,6 +47,7 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 		int changeStamp;
 		bool hadXmlDeclaration;
 		bool isShared;
+		IDictionary<string, List<string>> conditionedProperties = new Dictionary<string, List<string>> ();
 
 		MSBuildEngineManager engineManager;
 		bool engineManagerIsLocal;
@@ -132,7 +133,8 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 		void DisposeMainInstance ()
 		{
 			if (nativeProjectInfo != null) {
-				mainProjectInstance.Dispose ();
+				if (mainProjectInstance != null)
+					mainProjectInstance.Dispose ();
 				nativeProjectInfo.Engine.UnloadProject (nativeProjectInfo.Project);
 				if (engineManagerIsLocal)
 					nativeProjectInfo.Engine.Dispose ();
@@ -245,6 +247,7 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 			AssertCanModify ();
 			DisposeMainInstance ();
 			ChildNodes = ChildNodes.Clear ();
+			conditionedProperties.Clear ();
 			bestGroups = null;
 			hadXmlDeclaration = false;
 			initialWhitespace = null;
@@ -413,6 +416,7 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 		{
 			mainProjectInstance = new MSBuildProjectInstance (this);
 			mainProjectInstance.Evaluate ();
+			conditionedProperties = mainProjectInstance.GetConditionedProperties ();
 		}
 
 		public MSBuildProjectInstance CreateInstance ()
@@ -584,6 +588,12 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 				NotifyChanged ();
 			} else
 				((MSBuildImportGroup)import.ParentObject).RemoveImport (import);
+		}
+
+		public IDictionary<string, List<string>> ConditionedProperties {
+			get {
+				return conditionedProperties;
+			}
 		}
 
 		public IMSBuildEvaluatedPropertyCollection EvaluatedProperties
@@ -883,14 +893,14 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 			}
 		}
 
-		public void RemoveItem (MSBuildItem item)
+		public void RemoveItem (MSBuildItem item, bool removeEmptyParentGroup = true)
 		{
 			AssertCanModify ();
 			if (item.ParentGroup != null) {
 				item.RemoveIndent ();
 				var g = item.ParentGroup;
 				g.RemoveItem (item);
-				if (!item.ParentGroup.Items.Any ())
+				if (removeEmptyParentGroup && !item.ParentGroup.Items.Any ())
 					Remove (g);
 			}
 		}

@@ -279,6 +279,158 @@ namespace MonoDevelop.Projects
 		}
 
 		/// <summary>
+		/// Runs the generator target and sends file change notifications if any files were modified, returns the build result
+		/// </summary>
+		public Task<TargetEvaluationResult> PerformGeneratorAsync (ConfigurationSelector configuration, string generatorTarget)
+		{
+			return BindTask<TargetEvaluationResult> (async cancelToken => {
+				var cancelSource = new CancellationTokenSource ();
+				cancelToken.Register (() => cancelSource.Cancel ());
+
+				using (var monitor = new ProgressMonitor (cancelSource)) {
+					return await this.PerformGeneratorAsync (monitor, configuration, generatorTarget);
+				}
+			});
+		}
+
+		/// <summary>
+		/// Runs the generator target and sends file change notifications if any files were modified, returns the build result
+		/// </summary>
+		public async Task<TargetEvaluationResult> PerformGeneratorAsync (ProgressMonitor monitor, ConfigurationSelector configuration, string generatorTarget)
+		{
+			var fileInfo = await GetProjectFileTimestamps (monitor, configuration);
+			var evalResult = await this.RunTarget (monitor, generatorTarget, configuration);
+			SendFileChangeNotifications (monitor, configuration, fileInfo);
+
+			return evalResult;
+		}
+
+		/// <summary>
+		/// Returns a list containing FileInfo for all the source files in the project
+		/// </summary>
+		async Task<List<FileInfo>> GetProjectFileTimestamps (ProgressMonitor monitor, ConfigurationSelector configuration)
+		{
+			var infoList = new List<FileInfo> ();
+			var projectFiles = await this.GetSourceFilesAsync (monitor, configuration);
+
+			foreach (var projectFile in projectFiles) {
+				var info = new FileInfo (projectFile.FilePath);
+				infoList.Add (info);
+			}
+
+			return infoList;
+		}
+
+		/// <summary>
+		/// Sends a file change notification via FileService for any file that has changed since the timestamps in beforeFileInfo
+		/// </summary>
+		void SendFileChangeNotifications (ProgressMonitor monitor, ConfigurationSelector configuration, List<FileInfo> beforeFileInfo)
+		{
+			var changedFiles = new List<FileInfo> ();
+
+			foreach (var file in beforeFileInfo) {
+				var info = new FileInfo (file.FullName);
+
+				if (file.Exists && info.Exists) {
+					if (file.LastWriteTime != info.LastWriteTime) {
+						changedFiles.Add (info);
+					}
+				} else if (info.Exists) {
+					changedFiles.Add (info);
+				} else if (file.Exists) {
+					// not sure if this should or could happen, it doesn't really make much sense
+					FileService.NotifyFileRemoved (file.FullName);
+				}
+			}
+
+			FileService.NotifyFilesChanged (changedFiles.Select (cf => new FilePath (cf.FullName)));
+		}
+
+		/// <summary>
+		/// Gets the source files that are included in the project, including any that are added by `CoreCompileDependsOn`
+		/// </summary>
+		public Task<ProjectFile[]> GetSourceFilesAsync (ConfigurationSelector configuration)
+		{
+			if (sourceProject == null)
+				return Task.FromResult (new ProjectFile [0]);
+
+			return BindTask<ProjectFile []> (async cancelToken => {
+				var cancelSource = new CancellationTokenSource ();
+				cancelToken.Register (() => cancelSource.Cancel ());
+
+				using (var monitor = new ProgressMonitor (cancelSource)) {
+					return await GetSourceFilesAsync (monitor, configuration);
+				}
+			});
+		}
+
+		/// <summary>
+		/// Gets the source files that are included in the project, including any that are added by `CoreCompileDependsOn`
+		/// </summary>
+		public async Task<ProjectFile[]> GetSourceFilesAsync (ProgressMonitor monitor, ConfigurationSelector configuration)
+		{
+			// pre-load the results with the current list of files in the project
+			var results = new List<ProjectFile> (this.Files);
+
+			// add in any compile items that we discover from running the CoreCompile dependencies
+			var evaluatedCompileItems = await GetCompileItemsFromCoreCompileDependenciesAsync (monitor, configuration);
+			var addedItems = evaluatedCompileItems.Where (i => results.All (pi => pi.FilePath != i.FilePath)).ToList ();
+			results.AddRange (addedItems);
+
+			return results.ToArray ();
+		}
+
+		bool evaluatedCoreCompileDependencies;
+		readonly TaskCompletionSource<ProjectFile[]> evaluatedCompileItemsTask = new TaskCompletionSource<ProjectFile[]> ();
+
+		/// <summary>
+		/// Gets the list of files that are included as Compile items from the evaluation of the CoreCompile dependecy targets
+		/// </summary>
+		async Task<ProjectFile[]> GetCompileItemsFromCoreCompileDependenciesAsync (ProgressMonitor monitor, ConfigurationSelector configuration)
+		{
+			List<ProjectFile> result = null;
+			lock (evaluatedCompileItemsTask) {
+				if (!evaluatedCoreCompileDependencies) {
+					result = new List<ProjectFile> ();
+					evaluatedCoreCompileDependencies = true;
+				}
+			}
+
+			if (result != null) {
+				var coreCompileDependsOn = sourceProject.EvaluatedProperties.GetValue<string> ("CoreCompileDependsOn");
+
+				if (string.IsNullOrEmpty (coreCompileDependsOn)) {
+					evaluatedCompileItemsTask.SetResult (new ProjectFile [0]);
+					return evaluatedCompileItemsTask.Task.Result;
+				}
+
+				var dependsList = coreCompileDependsOn.Split (new [] { ";" }, StringSplitOptions.RemoveEmptyEntries);
+				foreach (var dependTarget in dependsList) {
+					try {
+						// evaluate the Compile targets
+						var ctx = new TargetEvaluationContext ();
+						ctx.ItemsToEvaluate.Add ("Compile");
+
+						var evalResult = await this.RunTarget (monitor, dependTarget, configuration, ctx);
+						if (evalResult != null && !evalResult.BuildResult.HasErrors) {
+							var evalItems = evalResult
+								.Items
+								.Select (i => new ProjectFile (MSBuildProjectService.FromMSBuildPath (sourceProject.BaseDirectory, i.Include), "Compile") { Project = this })
+								.ToList ();
+
+							result.AddRange (evalItems);
+						}
+					} catch (Exception ex) {
+						LoggingService.LogInternalError (string.Format ("Error running target {0}", dependTarget), ex);
+					}
+				}
+				evaluatedCompileItemsTask.SetResult (result.ToArray ());
+			}
+
+			return await evaluatedCompileItemsTask.Task;
+		}
+
+		/// <summary>
 		/// Called just after the MSBuild project is loaded but before it is evaluated.
 		/// </summary>
 		/// <param name="project">The project</param>
@@ -949,8 +1101,6 @@ namespace MonoDevelop.Projects
 			return projectBuilder;
 		}
 
-		static int builderCounter;
-
 		async Task<RemoteProjectBuilder> RequestLockedBuilder ()
 		{
 			TargetRuntime runtime = null;
@@ -1437,10 +1587,7 @@ namespace MonoDevelop.Projects
 			}
 			
 			if (UsingMSBuildEngine (configuration)) {
-				var result = await RunMSBuildTarget (monitor, "Clean", configuration, context);
-				if (!result.BuildResult.Failed)
-					SetFastBuildCheckClean (configuration);
-				return result;			
+				return await RunMSBuildTarget (monitor, "Clean", configuration, context);
 			}
 			
 			monitor.Log.WriteLine ("Removing output files...");
@@ -1762,14 +1909,33 @@ namespace MonoDevelop.Projects
 			}
 			
 			saving = true;
+			MSBuildProjectInstance pi = null;
+
 			try {
 				msbuildUpdatePending = false;
 				sourceProject.FileName = FileName;
-				DateTime t = DateTime.Now;
+
+				// Create a project instance to be used for comparing old and new values in the global property group
+				// We use a dummy configuration and platform to avoid loading default values from the configurations
+				// while evaluating
+				var c = Guid.NewGuid ().ToString ();
+				pi = CreateProjectInstaceForConfiguration (c, c);
+
+				IMSBuildPropertySet globalGroup = sourceProject.GetGlobalPropertyGroup ();
+
+				// Store properties that already exist in the project. We'll always keep those properties, even if they have default values.
+				var preexistingGlobalProps = new HashSet<string> (globalGroup != null ? globalGroup.GetProperties ().Select (p => p.Name) : Enumerable.Empty<string> ());
+
 				OnWriteProjectHeader (monitor, sourceProject);
 				ProjectExtension.OnWriteProject (monitor, sourceProject);
+
+				// Remove properties whose value has not changed and which were not set when the project was loaded
+				((MSBuildPropertyGroup)globalGroup).UnMerge (pi.EvaluatedProperties, preexistingGlobalProps);
+
 				sourceProject.IsNewProject = false;
 			} finally {
+				if (pi != null)
+					pi.Dispose ();
 				saving = false;
 			}
 		}
@@ -1794,6 +1960,8 @@ namespace MonoDevelop.Projects
 			public IMSBuildPropertySet Group;
 			public bool Exists;
 			public bool IsNew; // The group did not exist in the original file
+			public MSBuildProjectInstance ProjectInstance;
+			public HashSet<string> PreExistingProperties;
 		}
 
 		const string Unspecified = null;
@@ -2015,19 +2183,24 @@ namespace MonoDevelop.Projects
 			if (cgrp.FullySpecified)
 				config.Properties = cgrp.Group;
 
+			var pi = CreateProjectInstaceForConfiguration (conf, platform);
+
+			config.Platform = platform;
+			projectExtension.OnReadConfiguration (monitor, config, pi.EvaluatedProperties);
+			Configurations.Add (config);
+		}
+
+		MSBuildProjectInstance CreateProjectInstaceForConfiguration (string conf, string platform)
+		{
 			var pi = sourceProject.CreateInstance ();
 			pi.SetGlobalProperty ("Configuration", conf);
 			if (platform == string.Empty)
 				pi.SetGlobalProperty ("Platform", "AnyCPU");
 			else
 				pi.SetGlobalProperty ("Platform", platform);
-
 			pi.OnlyEvaluateProperties = true;
 			pi.Evaluate ();
-
-			config.Platform = platform;
-			projectExtension.OnReadConfiguration (monitor, config, pi.EvaluatedProperties);
-			Configurations.Add (config);
+			return pi;
 		}
 
 		protected virtual void OnReadConfiguration (ProgressMonitor monitor, ProjectConfiguration config, IMSBuildEvaluatedPropertyCollection grp)
@@ -2079,29 +2252,6 @@ namespace MonoDevelop.Projects
 
 			foreach (var t in toRemove)
 				msproject.RemoveItem (t);*/
-		}
-
-		IMSBuildPropertySet GetMergedConfiguration (List<ConfigData> configData, string conf, string platform, IMSBuildPropertySet propGroupLimit)
-		{
-			IMSBuildPropertySet merged = null;
-
-			foreach (ConfigData grp in configData) {
-				if (grp.Group == propGroupLimit)
-					break;
-				if ((grp.Config == conf || grp.Config == Unspecified || conf == Unspecified) && (grp.Platform == platform || grp.Platform == Unspecified || platform == Unspecified)) {
-					if (merged == null)
-						merged = grp.Group;
-					else if (merged is MSBuildPropertyGroupMerged)
-						((MSBuildPropertyGroupMerged)merged).Add (grp.Group);
-					else {
-						MSBuildPropertyGroupMerged m = new MSBuildPropertyGroupMerged (merged.ParentProject);
-						m.Add (merged);
-						m.Add (grp.Group);
-						merged = m;
-					}
-				}
-			}
-			return merged;
 		}
 
 		internal void LoadProjectItems (MSBuildProject msproject, ProjectItemFlags flags, HashSet<MSBuildItem> loadedItems)
@@ -2179,18 +2329,19 @@ namespace MonoDevelop.Projects
 				var defaultConfProp = globalGroup.GetProperties ().FirstOrDefault (p => p.Name == "Configuration" && IsDefaultSetter (p));
 				var defaultPlatProp = globalGroup.GetProperties ().FirstOrDefault (p => p.Name == "Platform" && IsDefaultSetter (p));
 
-				// If there is no config property, or if the config doesn't exist anymore, give it a new value
-				if (defaultConfProp == null || !Configurations.Any<SolutionItemConfiguration> (c => c.Name == defaultConfProp.Value)) {
-					ItemConfiguration conf = Configurations.FirstOrDefault<ItemConfiguration> (c => c.Name == "Debug");
-					if (conf == null) conf = Configurations [0];
-					string platform = conf.Platform.Length == 0 ? "AnyCPU" : conf.Platform;
-					globalGroup.SetValue ("Configuration", conf.Name, condition:" '$(Configuration)' == '' ");
-					globalGroup.SetValue ("Platform", platform, condition:" '$(Platform)' == '' ");
-				}
-				else if (defaultPlatProp == null || !Configurations.Any<SolutionItemConfiguration> (c => c.Name == defaultConfProp.Value && c.Platform == defaultPlatProp.Value)) {
-					ItemConfiguration conf = Configurations.FirstOrDefault<ItemConfiguration> (c => c.Name == defaultConfProp.Value);
-					string platform = conf.Platform.Length == 0 ? "AnyCPU" : conf.Platform;
-					globalGroup.SetValue ("Platform", platform, condition:" '$(Platform)' == '' ");
+				if (msproject.IsNewProject || (defaultConfProp != null && defaultPlatProp != null)) {
+					// If there is no config property, or if the config doesn't exist anymore, give it a new value
+					if (defaultConfProp == null || !Configurations.Any<SolutionItemConfiguration> (c => c.Name == defaultConfProp.Value)) {
+						ItemConfiguration conf = Configurations.FirstOrDefault<ItemConfiguration> (c => c.Name == "Debug");
+						if (conf == null) conf = Configurations [0];
+						string platform = conf.Platform.Length == 0 ? "AnyCPU" : conf.Platform;
+						globalGroup.SetValue ("Configuration", conf.Name, condition: " '$(Configuration)' == '' ");
+						globalGroup.SetValue ("Platform", platform, condition: " '$(Platform)' == '' ");
+					} else if (defaultPlatProp == null || !Configurations.Any<SolutionItemConfiguration> (c => c.Name == defaultConfProp.Value && c.Platform == defaultPlatProp.Value)) {
+						ItemConfiguration conf = Configurations.FirstOrDefault<ItemConfiguration> (c => c.Name == defaultConfProp.Value);
+						string platform = conf.Platform.Length == 0 ? "AnyCPU" : conf.Platform;
+						globalGroup.SetValue ("Platform", platform, condition: " '$(Platform)' == '' ");
+					}
 				}
 			}
 
@@ -2235,77 +2386,90 @@ namespace MonoDevelop.Projects
 			// Configurations
 
 			if (Configurations.Count > 0) {
+				
 				List<ConfigData> configData = GetConfigData (msproject, true);
 
-				// Write configuration data, creating new property groups if necessary
+				try {
+					// Write configuration data, creating new property groups if necessary
 
-				foreach (ProjectConfiguration conf in Configurations) {
-					MSBuildPropertyGroup pg = (MSBuildPropertyGroup) conf.Properties;
-					ConfigData cdata = configData.FirstOrDefault (cd => cd.Group == pg);
-					if (cdata == null) {
-						msproject.AddPropertyGroup (pg, true);
-						pg.IgnoreDefaultValues = true;
-						pg.Condition = BuildConfigCondition (conf.Name, conf.Platform);
-						cdata = new ConfigData (conf.Name, conf.Platform, pg);
-						cdata.IsNew = true;
-						configData.Add (cdata);
-					} else {
-						// The configuration name may have changed
-						if (cdata.Config != conf.Name || cdata.Platform != conf.Platform) {
-							((MSBuildPropertyGroup)cdata.Group).Condition = BuildConfigCondition (conf.Name, conf.Platform);
-							cdata.Config = conf.Name;
-							cdata.Platform = conf.Platform;
+					foreach (ProjectConfiguration conf in Configurations) {
+
+						MSBuildPropertyGroup pg = (MSBuildPropertyGroup)conf.Properties;
+						ConfigData cdata = configData.FirstOrDefault (cd => cd.Group == pg);
+
+						var pi = CreateProjectInstaceForConfiguration (conf.Name, conf.Platform);
+
+						if (cdata == null) {
+							msproject.AddPropertyGroup (pg, true);
+							pg.IgnoreDefaultValues = true;
+							pg.Condition = BuildConfigCondition (conf.Name, conf.Platform);
+							cdata = new ConfigData (conf.Name, conf.Platform, pg);
+							cdata.IsNew = true;
+							configData.Add (cdata);
+						} else {
+							// The configuration name may have changed
+							if (cdata.Config != conf.Name || cdata.Platform != conf.Platform) {
+								((MSBuildPropertyGroup)cdata.Group).Condition = BuildConfigCondition (conf.Name, conf.Platform);
+								cdata.Config = conf.Name;
+								cdata.Platform = conf.Platform;
+							}
+						}
+						cdata.ProjectInstance = pi;
+
+						((MSBuildPropertyGroup)cdata.Group).IgnoreDefaultValues = true;
+						cdata.Exists = true;
+						cdata.PreExistingProperties = new HashSet<string> (cdata.Group.GetProperties ().Select (p => p.Name));
+						ProjectExtension.OnWriteConfiguration (monitor, conf, cdata.Group);
+					}
+
+					// Find the properties in all configurations that have the MergeToProject flag set
+					var mergeToProjectProperties = new HashSet<MergedProperty> (GetMergeToProjectProperties (configData));
+					var mergeToProjectPropertyValues = new Dictionary<string, MergedPropertyValue> ();
+
+					foreach (ProjectConfiguration conf in Configurations) {
+						ConfigData cdata = FindPropertyGroup (configData, conf);
+						var propGroup = (MSBuildPropertyGroup)cdata.Group;
+						CollectMergetoprojectProperties (propGroup, mergeToProjectProperties, mergeToProjectPropertyValues);
+					}
+
+					foreach (ProjectConfiguration conf in Configurations) {
+						ConfigData cdata = FindPropertyGroup (configData, conf);
+						var propGroup = (MSBuildPropertyGroup)cdata.Group;
+
+						cdata.PreExistingProperties.UnionWith (mergeToProjectPropertyValues.Select (p => p.Key));
+						propGroup.UnMerge (cdata.ProjectInstance.EvaluatedProperties, cdata.PreExistingProperties);
+						propGroup.IgnoreDefaultValues = false;
+					}
+
+					// Move properties with common values from configurations to the main
+					// property group
+					foreach (KeyValuePair<string, MergedPropertyValue> prop in mergeToProjectPropertyValues) {
+						if (!prop.Value.IsDefault)
+							globalGroup.SetValue (prop.Key, prop.Value.XmlValue, preserveExistingCase: prop.Value.PreserveExistingCase);
+						else {
+							// if the value is default, only remove the property if it was not already the default to avoid unnecessary project file churn
+							globalGroup.SetValue (prop.Key, prop.Value.XmlValue, defaultValue: prop.Value.XmlValue, preserveExistingCase: prop.Value.PreserveExistingCase);
 						}
 					}
-					((MSBuildPropertyGroup)cdata.Group).IgnoreDefaultValues = true;
-					cdata.Exists = true;
-					ProjectExtension.OnWriteConfiguration (monitor, conf, cdata.Group);
-				}
-
-				// Find the properties in all configurations that have the MergeToProject flag set
-				var mergeToProjectProperties = new HashSet<MergedProperty> (GetMergeToProjectProperties (configData));
-				var mergeToProjectPropertyNames = new HashSet<string> (mergeToProjectProperties.Select (p => p.Name));
-				var mergeToProjectPropertyValues = new Dictionary<string,MergedPropertyValue> ();
-
-				foreach (ProjectConfiguration conf in Configurations) {
-					ConfigData cdata = FindPropertyGroup (configData, conf);
-					var propGroup = (MSBuildPropertyGroup) cdata.Group;
-
-					IMSBuildPropertySet baseGroup = GetMergedConfiguration (configData, conf.Name, conf.Platform, propGroup);
-
-					CollectMergetoprojectProperties (propGroup, mergeToProjectProperties, mergeToProjectPropertyValues);
-
-					propGroup.UnMerge (baseGroup, mergeToProjectPropertyNames);
-					propGroup.IgnoreDefaultValues = false;
-				}
-
-				// Move properties with common values from configurations to the main
-				// property group
-				foreach (KeyValuePair<string,MergedPropertyValue> prop in mergeToProjectPropertyValues) {
-					if (!prop.Value.IsDefault)
-						globalGroup.SetValue (prop.Key, prop.Value.XmlValue, preserveExistingCase: prop.Value.PreserveExistingCase);
-					else {
-						// if the value is default, only remove the property if it was not already the default to avoid unnecessary project file churn
-						globalGroup.SetValue (prop.Key, prop.Value.XmlValue, defaultValue:prop.Value.XmlValue, preserveExistingCase: prop.Value.PreserveExistingCase);
+					foreach (SolutionItemConfiguration conf in Configurations) {
+						var propGroup = FindPropertyGroup (configData, conf).Group;
+						foreach (string mp in mergeToProjectPropertyValues.Keys)
+							propGroup.RemoveProperty (mp);
 					}
-				}
-				foreach (string prop in mergeToProjectPropertyNames) {
-					if (!mergeToProjectPropertyValues.ContainsKey (prop))
-						globalGroup.RemoveProperty (prop);
-				}
-				foreach (SolutionItemConfiguration conf in Configurations) {
-					var propGroup = FindPropertyGroup (configData, conf).Group;
-					foreach (string mp in mergeToProjectPropertyValues.Keys)
-						propGroup.RemoveProperty (mp);
-				}
 
-				// Remove groups corresponding to configurations that have been removed
-				// or groups which don't have any property and did not already exist
-				foreach (ConfigData cd in configData) {
-					if ((!cd.Exists && cd.FullySpecified) || (cd.IsNew && !cd.Group.GetProperties ().Any ()))
-						msproject.Remove ((MSBuildPropertyGroup)cd.Group);
+					// Remove groups corresponding to configurations that have been removed
+					// or groups which don't have any property and did not already exist
+					foreach (ConfigData cd in configData) {
+						if ((!cd.Exists && cd.FullySpecified) || (cd.IsNew && !cd.Group.GetProperties ().Any ()))
+							msproject.Remove ((MSBuildPropertyGroup)cd.Group);
+					}
+				} finally {
+					foreach (var cd in configData)
+						if (cd.ProjectInstance != null)
+							cd.ProjectInstance.Dispose ();
 				}
 			}
+
 			SaveProjectItems (monitor, msproject, usedMSBuildItems);
 
 			if (msproject.IsNewProject) {
@@ -2382,9 +2546,15 @@ namespace MonoDevelop.Projects
 			return val.Substring (0, i).Trim () == "'$(" + prop.Name + ")'" && val.Substring (i + 2).Trim () == "''";
 		}
 
-		class ExpandedItemList: List<MSBuildItem>
+		class ExpandedItemList: List<ExpandedItemInfo>
 		{
 			public bool Modified { get; set; }
+		}
+
+		class ExpandedItemInfo
+		{
+			public ProjectItem ProjectItem;
+			public MSBuildItem MSBuildItem;
 		}
 
 		HashSet<MSBuildItem> usedMSBuildItems = new HashSet<MSBuildItem> ();
@@ -2405,8 +2575,10 @@ namespace MonoDevelop.Projects
 				if (itemInfo.Value.Modified || msproject.EvaluatedItemsIgnoringCondition.Where (i => i.SourceItem == itemInfo.Key).Count () != itemInfo.Value.Count) {
 					// Expand the list
 					unusedItems.Add (itemInfo.Key);
-					foreach (var it in itemInfo.Value)
-						msproject.AddItem (it);
+					foreach (var it in itemInfo.Value) {
+						it.ProjectItem.BackingItem = it.MSBuildItem;
+						msproject.AddItem (it.MSBuildItem);
+					}
 				}
 			}
 
@@ -2431,7 +2603,10 @@ namespace MonoDevelop.Projects
 				// must be individually included
 				var bitem = msproject.CreateItem (item.ItemName, GetPrefixedInclude (pathPrefix, item.Include));
 				item.Write (this, bitem);
-				items.Add (bitem);
+				items.Add (new ExpandedItemInfo {
+					ProjectItem = item,
+					MSBuildItem = bitem
+				});
 
 				unusedItems.Remove (item.BackingItem);
 
@@ -2463,10 +2638,17 @@ namespace MonoDevelop.Projects
 		{
 			// Compare only metadata, since item name and include can't change
 
+			var n = 0;
 			foreach (var p in item.Metadata.GetProperties ()) {
-				if (!object.Equals (p.Value, evalItem.Metadata.GetValue (p.Name)))
+				var p2 = evalItem.Metadata.GetProperty (p.Name);
+				if (p2 == null)
 					return false;
+				if (!p.ValueType.Equals (p.Value, p2.Value))
+					return false;
+				n++;
 			}
+			if (evalItem.SourceItem.Metadata.GetProperties ().Count () != n)
+				return false;
 			return true;
 		}
 

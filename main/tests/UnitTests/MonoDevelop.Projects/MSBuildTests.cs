@@ -1341,8 +1341,8 @@ namespace MonoDevelop.Projects
 
 			await p.SaveAsync (Util.GetMonitor ());
 
-			var refXml = Util.ToSystemEndings (File.ReadAllText (p.FileName + ".config-copied"));
-			var savedXml = File.ReadAllText (p.FileName);
+			var refXml = Util.ToWindowsEndings (File.ReadAllText (p.FileName + ".config-copied"));
+			var savedXml = Util.ToWindowsEndings (File.ReadAllText (p.FileName));
 			Assert.AreEqual (refXml, savedXml);
 		}
 
@@ -1384,6 +1384,57 @@ namespace MonoDevelop.Projects
 			p.References.Add (pr);
 
 			Assert.AreEqual ("System", pr.Include);
+		}
+
+		[Test]
+		public async Task ProjectDefinesCommonPropertiesInExternalFile ()
+		{
+			string solFile = Util.GetSampleProject ("project-includes-props", "ConsoleProject.sln");
+			Solution sol = (Solution) await Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solFile);
+			Project p = (Project) sol.Items [0];
+
+			var refXml = Util.ToSystemEndings (File.ReadAllText (p.FileName));
+
+			await p.SaveAsync (Util.GetMonitor ());
+
+			var savedXml = File.ReadAllText (p.FileName);
+			Assert.AreEqual (refXml, savedXml);
+		}
+
+		[Test]
+		public async Task ProjectWithMultiIncludeItem ()
+		{
+			string solFile = Util.GetSampleProject ("project-multi-include-item", "ConsoleProject.sln");
+			Solution sol = (Solution) await Services.ProjectService.ReadWorkspaceItem (Util.GetMonitor (), solFile);
+			Project p = (Project) sol.Items [0];
+
+			var f = p.Files.FirstOrDefault (pf => pf.FilePath.FileName == "Program1.cs");
+			Assert.NotNull (f);
+			Assert.IsFalse (f.Visible);
+
+			f = p.Files.FirstOrDefault (pf => pf.FilePath.FileName == "Program2.cs");
+			Assert.NotNull (f);
+			Assert.IsFalse (f.Visible);
+
+			f = p.Files.FirstOrDefault (pf => pf.FilePath.FileName == "Program3.cs");
+			Assert.NotNull (f);
+			Assert.IsFalse (f.Visible);
+
+			var refXml = Util.ToSystemEndings (File.ReadAllText (p.FileName));
+
+			await p.SaveAsync (Util.GetMonitor ());
+			await p.SaveAsync (Util.GetMonitor ());
+
+			var savedXml = File.ReadAllText (p.FileName);
+			Assert.AreEqual (refXml, savedXml);
+
+			refXml = Util.ToSystemEndings (Util.ToWindowsEndings (File.ReadAllText (p.FileName + ".2")));
+			f.Visible = true;
+			await p.SaveAsync (Util.GetMonitor ());
+			await p.SaveAsync (Util.GetMonitor ());
+
+			savedXml = File.ReadAllText (p.FileName);
+			Assert.AreEqual (refXml, savedXml);
 		}
 	}
 

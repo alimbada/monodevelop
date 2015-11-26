@@ -57,7 +57,6 @@ namespace MonoDevelop.Components.Docking
 		bool gettingContent;
 		bool isPositionMarker;
 		bool stickyVisible;
-		IDockItemLabelProvider dockLabelProvider;
 		DockItemToolbar toolbarTop;
 		DockItemToolbar toolbarBottom;
 		DockItemToolbar toolbarLeft;
@@ -141,11 +140,6 @@ namespace MonoDevelop.Components.Docking
 			set {
 				frame.SetStatus (this, value);
 			}
-		}
-		
-		public IDockItemLabelProvider DockLabelProvider {
-			get { return this.dockLabelProvider; }
-			set { this.dockLabelProvider = value; }
 		}
 		
 		internal DockItemContainer Widget {
@@ -326,7 +320,12 @@ namespace MonoDevelop.Components.Docking
 		{
 			if (dockBarItem != null)
 				dockBarItem.Present (Status == DockItemStatus.AutoHide || giveFocus);
-			else
+			else if (floatingWindow != null) {
+				if (giveFocus)
+					floatingWindow.Present ();
+				else
+					floatingWindow.Show ();
+			} else
 				frame.Present (this, Status == DockItemStatus.AutoHide || giveFocus);
 		}
 
@@ -411,6 +410,7 @@ namespace MonoDevelop.Components.Docking
 				SetRegionStyle (frame.GetRegionStyleForItem (this));
 
 				floatingWindow = new DockFloatingWindow ((Window)frame.Toplevel, GetWindowTitle ());
+				Ide.IdeApp.CommandService.RegisterTopWindow (floatingWindow);
 
 				VBox box = new VBox ();
 				box.Show ();
@@ -596,10 +596,5 @@ namespace MonoDevelop.Components.Docking
 		}
 
 		public Window DockParent { get; private set; }
-	}
-	
-	public interface IDockItemLabelProvider
-	{
-		Gtk.Widget CreateLabel (Orientation orientation);
 	}
 }

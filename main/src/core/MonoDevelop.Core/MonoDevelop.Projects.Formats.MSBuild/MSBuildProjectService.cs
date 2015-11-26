@@ -128,7 +128,7 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 
 			// Get item type nodes
 
-			itemTypeNodes = AddinManager.GetExtensionNodes<ExtensionNode> (ItemTypesExtensionPath).ToArray ();
+			itemTypeNodes = AddinManager.GetExtensionNodes<ExtensionNode> (ItemTypesExtensionPath).Concat (Enumerable.Repeat (GenericItemNode.Instance,1)).ToArray ();
 
 			// Get import redirects
 
@@ -607,6 +607,9 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 
 		internal static Task<SolutionItem> CreateGenericProject (string file)
 		{
+			if (file == null)
+				return Task.FromResult<SolutionItem> (new GenericProject ());
+
 			return Task<SolutionItem>.Factory.StartNew (delegate {
 				var t = ReadGenericProjectType (file);
 				if (t == null)
@@ -858,19 +861,25 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 		{
 			using (await buildersLock.EnterAsync ())
 			{
-				//attempt to use 12.0 builder first if available
-				string toolsVersion = "12.0";
-				string binDir = runtime.GetMSBuildBinPath ("12.0");
+				//attempt to use 14.0 builder first if available
+				string toolsVersion = "14.0";
+				string binDir = runtime.GetMSBuildBinPath ("14.0");
 				if (binDir == null) {
-					//fall back to 4.0, we know it's always available
-					toolsVersion = "4.0";
+					toolsVersion = "12.0";
+					binDir = runtime.GetMSBuildBinPath ("12.0");
+					if (binDir == null) {
+						//fall back to 4.0, we know it's always available
+						toolsVersion = "4.0";
+					}
 				}
 
-				//check the ToolsVersion we found can handle the project
+				// Check the ToolsVersion we found can handle the project
+				// The check is only done for the .NET framework since Mono doesn't really have the concept of ToolsVersion.
+				// On Mono we'll just try to build with whatever is installed.
 				Version tv, mtv;
-				if (Version.TryParse (toolsVersion, out tv) && Version.TryParse (minToolsVersion, out mtv) && tv < mtv) {
+				if (runtime is MsNetTargetRuntime && Version.TryParse (toolsVersion, out tv) && Version.TryParse (minToolsVersion, out mtv) && tv < mtv) {
 					string error = null;
-					if (runtime is MsNetTargetRuntime && minToolsVersion == "12.0")
+					if (minToolsVersion == "12.0")
 						error = "MSBuild 2013 is not installed. Please download and install it from " +
 						"http://www.microsoft.com/en-us/download/details.aspx?id=40760";
 					throw new InvalidOperationException (error ?? string.Format (
@@ -1145,13 +1154,31 @@ namespace MonoDevelop.Projects.Formats.MSBuild
 
 		public bool? RawValue { get; private set; }
 	}
-	
-	[ExportProjectType (MSBuildProjectService.GenericItemGuid, Extension="mdproj")]
-	class GenericItemFactory: SolutionItemFactory
+
+	class GenericItemNode : ProjectTypeNode
 	{
-		public override Task<SolutionItem> CreateItem (string fileName, string typeGuid)
+		public static readonly GenericItemNode Instance = new GenericItemNode ();
+
+		public GenericItemNode ()
 		{
-			return MSBuildProjectService.CreateGenericProject (fileName);
+			Guid = MSBuildProjectService.GenericItemGuid;
+			Extension = "mdproj";
+			MSBuildSupport = MSBuildSupport.NotSupported;
+			TypeAlias = "GenericProject";
+		}
+
+		public override Type ItemType {
+			get {
+				return typeof (GenericItemFactory);
+			}
+		}
+
+		class GenericItemFactory: SolutionItemFactory
+		{
+			public override Task<SolutionItem> CreateItem (string fileName, string typeGuid)
+			{
+				return MSBuildProjectService.CreateGenericProject (fileName);
+			}
 		}
 	}
 

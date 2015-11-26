@@ -1,4 +1,4 @@
-// ExtendibleTextEditor.cs
+﻿// ExtendibleTextEditor.cs
 //
 // Author:
 //   Mike Krüger <mkrueger@novell.com>
@@ -295,17 +295,12 @@ namespace MonoDevelop.SourceEditor
 		{
 			LoggingService.LogInternalError ("Error in text editor extension chain", ex);
 		}
-		
-		IEnumerable<char> TextWithoutCommentsAndStrings {
-			get {
-				return from p in GetTextWithoutCommentsAndStrings (Document, 0, Document.TextLength) select p.Key;
-			}
-		}
-		
-		static IEnumerable<KeyValuePair <char, int>> GetTextWithoutCommentsAndStrings (Mono.TextEditor.TextDocument doc, int start, int end) 
+
+		static IEnumerable<char> GetTextWithoutCommentsAndStrings (Mono.TextEditor.TextDocument doc, int start, int end) 
 		{
 			bool isInString = false, isInChar = false;
 			bool isInLineComment = false, isInBlockComment = false;
+			int escaping = 0;
 			
 			for (int pos = start; pos < end; pos++) {
 				char ch = doc.GetCharAt (pos);
@@ -327,18 +322,25 @@ namespace MonoDevelop.SourceEditor
 						}
 						break;
 					case '"':
-						if (!(isInChar || isInLineComment || isInBlockComment)) 
-							isInString = !isInString;
+						if (!(isInChar || isInLineComment || isInBlockComment))
+							if (!isInString || escaping != 1)
+								isInString = !isInString;
 						break;
 					case '\'':
-						if (!(isInString || isInLineComment || isInBlockComment)) 
-							isInChar = !isInChar;
+						if (!(isInString || isInLineComment || isInBlockComment))
+							if (!isInChar || escaping != 1)
+								isInChar = !isInChar;
+						break;
+					case '\\':
+						if (escaping != 1)
+							escaping = 2;
 						break;
 					default :
 						if (!(isInString || isInChar || isInLineComment || isInBlockComment))
-							yield return new KeyValuePair<char, int> (ch, pos);
+							yield return ch;
 						break;
 				}
+				escaping--;
 			}
 		}
 		
@@ -418,7 +420,7 @@ namespace MonoDevelop.SourceEditor
 					char openingBrace = openBrackets [braceIndex];
 
 					int count = 0;
-					foreach (char curCh in TextWithoutCommentsAndStrings) {
+					foreach (char curCh in GetTextWithoutCommentsAndStrings(Document, 0, Document.TextLength)) {
 						if (curCh == openingBrace) {
 							count++;
 						} else if (curCh == closingBrace) {
@@ -501,9 +503,9 @@ namespace MonoDevelop.SourceEditor
 			
 			if (error != null) {
 				if (error.Error.ErrorType == MonoDevelop.Ide.TypeSystem.ErrorType.Warning)
-					return GettextCatalog.GetString ("<b>Parser Warning</b>: {0}",
+					return GettextCatalog.GetString ("<b>Warning</b>: {0}",
 						GLib.Markup.EscapeText (error.Error.Message));
-				return GettextCatalog.GetString ("<b>Parser Error</b>: {0}",
+				return GettextCatalog.GetString ("<b>Error</b>: {0}",
 					GLib.Markup.EscapeText (error.Error.Message));
 			}
 			return null;
@@ -643,28 +645,15 @@ namespace MonoDevelop.SourceEditor
 		}
 		
 #region Templates
-		int FindPrevWordStart (int offset)
-		{
-			while (--offset >= 0 && !Char.IsWhiteSpace (Document.GetCharAt (offset))) 
-				;
-			return ++offset;
-		}
 
-		public string GetWordBeforeCaret ()
-		{
-			int offset = this.Caret.Offset;
-			int start  = FindPrevWordStart (offset);
-			return Document.GetTextAt (start, offset - start);
-		}
-		
 		public bool IsTemplateKnown ()
 		{
-			string word = GetWordBeforeCaret ();
+			string shortcut = CodeTemplate.GetTemplateShortcutBeforeCaret (EditorExtension.Editor);
 			bool result = false;
 			foreach (CodeTemplate template in CodeTemplateService.GetCodeTemplates (Document.MimeType)) {
-				if (template.Shortcut == word) {
+				if (template.Shortcut == shortcut) {
 					result = true;
-				} else if (template.Shortcut.StartsWith (word)) {
+				} else if (template.Shortcut.StartsWith (shortcut)) {
 					result = false;
 					break;
 				}
@@ -674,9 +663,9 @@ namespace MonoDevelop.SourceEditor
 		
 		public bool DoInsertTemplate ()
 		{
-			string word = GetWordBeforeCaret ();
+			string shortcut = CodeTemplate.GetTemplateShortcutBeforeCaret (EditorExtension.Editor);
 			foreach (CodeTemplate template in CodeTemplateService.GetCodeTemplates (Document.MimeType)) {
-				if (template.Shortcut == word) {
+				if (template.Shortcut == shortcut) {
 					InsertTemplate (template, view.WorkbenchWindow.Document.Editor, view.WorkbenchWindow.Document);
 					return true;
 				}

@@ -45,6 +45,7 @@ using MonoDevelop.Core.Text;
 using System.Threading.Tasks;
 using System.Threading;
 using ICSharpCode.NRefactory.CSharp.Refactoring;
+using ICSharpCode.NRefactory6.CSharp;
 
 namespace MonoDevelop.CSharp
 {
@@ -190,6 +191,9 @@ namespace MonoDevelop.CSharp
 
 		void UpdateOwnerProjects (IEnumerable<DotNetProject> allProjects)
 		{
+			if (DocumentContext == null) {
+				return;//This can happen if this object is disposed
+			}
 			var projects = new HashSet<DotNetProject> (allProjects.Where (p => p.IsFileInProject (DocumentContext.Name)));
 			if (ownerProjects == null || !projects.SetEquals (ownerProjects)) {
 				SetOwnerProjects (projects.OrderBy (p => p.Name).ToList ());
@@ -207,7 +211,7 @@ namespace MonoDevelop.CSharp
 		void UpdateOwnerProjects ()
 		{
 			UpdateOwnerProjects (IdeApp.Workspace.GetAllItems<DotNetProject> ());
-			if (DocumentContext.Project == null)
+			if (DocumentContext != null && DocumentContext.Project == null)
 				ResetOwnerProject ();
 		}
 
@@ -661,6 +665,8 @@ namespace MonoDevelop.CSharp
 
 		void Update()
 		{
+			if (DocumentContext == null)
+				return;
 			var parsedDocument = DocumentContext.ParsedDocument;
 			if (parsedDocument == null)
 				return;
@@ -682,11 +688,14 @@ namespace MonoDevelop.CSharp
 						return;
 					}
 					token = root.FindNode(TextSpan.FromBounds(caretOffset, caretOffset));
+					if (token.SpanStart != caretOffset)
+						token = root.SyntaxTree.FindTokenOnLeftOfPosition(caretOffset, cancellationToken).Parent;
 				} catch (Exception ex ) {
 					Console.WriteLine (ex);
 					return;
 				}
-				var curMember = token.AncestorsAndSelf ().FirstOrDefault (m => m is MemberDeclarationSyntax && !(m is NamespaceDeclarationSyntax));
+
+				var curMember = token.AncestorsAndSelf ().FirstOrDefault (m => m is VariableDeclaratorSyntax || (m is MemberDeclarationSyntax && !(m is NamespaceDeclarationSyntax)));
 				var curType = token.AncestorsAndSelf ().FirstOrDefault (IsType);
 
 				var curProject = ownerProjects != null && ownerProjects.Count > 1 ? DocumentContext.Project : null;

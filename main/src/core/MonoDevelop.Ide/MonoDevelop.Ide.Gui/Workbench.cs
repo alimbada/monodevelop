@@ -62,7 +62,7 @@ namespace MonoDevelop.Ide.Gui
 	{
 		readonly ProgressMonitorManager monitors = new ProgressMonitorManager ();
 		readonly List<Document> documents = new List<Document> ();
-		readonly List<Split> splits = new List<Split> ();
+		// readonly List<Split> splits = new List<Split> ();
 		DefaultWorkbench workbench;
 		PadCollection pads;
 
@@ -203,9 +203,12 @@ namespace MonoDevelop.Ide.Gui
 				if (toplevel == RootWindow)
 					return true;
 				#if WIN32
-				var wpfWindow = System.Windows.Application.Current.Windows.OfType<System.Windows.Window>().SingleOrDefault (x => x.IsActive);
-				if (wpfWindow != null)
-					return true;
+				var app = System.Windows.Application.Current;
+				if (app != null) {
+					var wpfWindow = app.Windows.OfType<System.Windows.Window>().SingleOrDefault (x => x.IsActive);
+					if (wpfWindow != null)
+						return true;
+				}
 				#endif
 				var dock = toplevel as DockFloatingWindow;
 				return dock != null && dock.DockParent == RootWindow;
@@ -316,6 +319,37 @@ namespace MonoDevelop.Ide.Gui
 			
 			foreach (Document doc in docs)
 				doc.Save ();
+		}
+
+		internal bool SaveAllDirtyFiles ()
+		{
+			Document[] docs = Documents.Where (doc => doc.IsDirty && doc.Window.ViewContent != null).ToArray ();
+			if (!docs.Any ())
+				return true;
+
+			foreach (Document doc in docs) {
+				AlertButton result = PromptToSaveChanges (doc);
+				if (result == AlertButton.Cancel)
+					return false;
+
+				doc.Save ();
+				if (doc.IsDirty) {
+					doc.Select ();
+					return false;
+				}
+			}
+			return true;
+		}
+
+		static AlertButton PromptToSaveChanges (Document doc)
+		{
+			return MessageService.GenericAlert (MonoDevelop.Ide.Gui.Stock.Warning,
+				GettextCatalog.GetString ("Save the changes to document '{0}' before creating a new solution?",
+					doc.Window.ViewContent.IsUntitled
+					? doc.Window.ViewContent.UntitledName
+					: System.IO.Path.GetFileName (doc.FileName)),
+				"",
+				AlertButton.Cancel, doc.Window.ViewContent.IsUntitled ? AlertButton.SaveAs : AlertButton.Save);
 		}
 		
 		public void CloseAllDocuments (bool leaveActiveDocumentOpen)
